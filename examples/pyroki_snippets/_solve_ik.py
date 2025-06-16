@@ -72,7 +72,12 @@ def _solve_ik_jax(
         .solve(
             verbose=False,
             linear_solver="dense_cholesky",
-            trust_region=jaxls.TrustRegionConfig(lambda_initial=1.0),
+            trust_region=jaxls.TrustRegionConfig(lambda_initial=0.1),
+            termination=jaxls.TerminationConfig(
+                max_iterations=200,
+                parameter_tolerance=1e-6,
+                early_termination=False,
+            ),
         )
     )
     return sol[joint_var]
