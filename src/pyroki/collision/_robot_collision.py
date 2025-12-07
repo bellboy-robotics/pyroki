@@ -40,6 +40,7 @@ class RobotCollision:
         urdf: yourdfpy.URDF,
         user_ignore_pairs: tuple[tuple[str, str], ...] = (),
         ignore_immediate_adjacents: bool = True,
+        min_capsule: bool = False,
     ):
         """
         Build a differentiable robot collision model from a URDF.
@@ -72,7 +73,8 @@ class RobotCollision:
         for link_name in link_name_list:
             cap_list.append(
                 Capsule.from_trimesh(
-                    RobotCollision._get_trimesh_collision_geometries(urdf, link_name)
+                    RobotCollision._get_trimesh_collision_geometries(urdf, link_name),
+                    min_capsule=min_capsule
                 )
             )
 
