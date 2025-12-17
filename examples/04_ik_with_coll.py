@@ -14,22 +14,18 @@ from robot_descriptions.loaders.yourdfpy import load_robot_description
 import yourdfpy
 from viser.extras import ViserUrdf
 import pyroki_snippets as pks
-import os
-import jaxlie
-
-    # Load URDF (the filename handler allows the mesh paths to resolve).
-# def filename_handler(fname: str):
-#     return yourdfpy.filename_handler_magic(fname, dir=os.path.dirname(fname))
-
-urdf_path = "/Users/friyuval/releases/env/BILLIE-01/urdf/XI130511D43A0E.urdf" 
-urdf = yourdfpy.URDF.load(urdf_path)
+import argparse
 
 
-def main():
+def main(urdf_path: str | None = None):
     """Main function for basic IK with collision."""
-    # urdf = load_robot_description("panda_description")
-    # target_link_name = "panda_hand"
-    target_link_name = "link_eef"
+    if urdf_path is None:
+        # load default example urdf
+        urdf = load_robot_description("panda_description")
+        target_link_name = "panda_hand"
+    else:
+        urdf = yourdfpy.URDF.load(urdf_path)
+        target_link_name = "link_eef"
     robot = pk.Robot.from_urdf(urdf)
 
     robot_coll = RobotCollision.from_urdf(urdf, min_capsule=True)
@@ -93,4 +89,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--urdf-path", type=str, default=None)
+    args = parser.parse_args()
+    main(args.urdf_path)
