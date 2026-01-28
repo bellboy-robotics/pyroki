@@ -13,6 +13,7 @@ import trimesh
 from jax.typing import ArrayLike
 from jaxtyping import Array, Float
 from typing_extensions import Self
+import numpy as np
 
 from ._utils import make_frame
 
@@ -236,15 +237,96 @@ class Capsule(CollGeom):
         return Capsule(pose=pose, size=size)
 
     @staticmethod
+    def find_minimum_bounding_capsule(mesh: trimesh.Trimesh) -> dict:
+        """
+        Find the minimum bounding capsule of the mesh.
+        Decide between axis-aligned bounding box (AABB) and minimum cylinder method.
+        """
+        
+        # Check axis-aligned bounding box (much simpler!)
+        extents = mesh.extents  # [x_size, y_size, z_size]
+        center = mesh.centroid  # or (bounds[0] + bounds[1]) / 2
+        
+        x, y, z = extents
+        
+        # Find the axis that minimizes capsule volume
+        h1, h2, h3 = x, y, z
+        r1, r2, r3 = (
+            np.sqrt(y**2 + z**2) / 2,  # Height along X
+            np.sqrt(x**2 + z**2) / 2,  # Height along Y
+            np.sqrt(x**2 + y**2) / 2   # Height along Z
+        )
+        
+        volumes_approx = [
+            r1**2 * h1 + 4/3 * r1**3,
+            r2**2 * h2 + 4/3 * r2**3,
+            r3**2 * h3 + 4/3 * r3**3
+        ]
+        
+        h_index = np.argmin(volumes_approx)
+        min_volume = np.min(volumes_approx)
+        
+        # Select height and radius based on chosen axis
+        if h_index == 0:
+            # Height along world X-axis
+            h = h1
+            r = r1
+            # Capsule Z should point along world X
+            rotation = np.array([
+                [0, 0, 1, 0],   # Capsule X = world Z
+                [0, -1, 0, 0],   # Capsule Y = -world Y
+                [1, 0, 0, 0],   # Capsule Z = world X ← height direction
+                [0, 0, 0, 1]
+            ])
+        elif h_index == 1:
+            # Height along world Y-axis
+            h = h2
+            r = r2
+            # Capsule Z points along -world Y (sign chosen for right-handed coordinate system)
+            rotation = np.array([
+                [1, 0, 0, 0],   # Capsule X = world X
+                [0, 0, 1, 0],   # Capsule Y = world Z
+                [0, -1, 0, 0],   # Capsule Z = -world Y ← height direction
+                [0, 0, 0, 1]
+            ])
+        else:  # h_index == 2
+            # Height along world Z-axis
+            h = h3
+            r = r3
+            # Capsule Z already along world Z - no rotation needed
+            rotation = np.eye(4)
+        
+        # Build transform: rotation + translation to center
+        transform = np.eye(4)
+        transform[:3, :3] = rotation[:3, :3]
+        transform[:3, 3] = center
+        
+        # Compare with minimum_cylinder method
+        results = trimesh.bounds.minimum_cylinder(mesh)
+        volume_approx = results["radius"]**2 * results["height"] + 4/3 * results["radius"]**3
+        
+        if volume_approx < min_volume:
+            return results
+        else:
+            return {
+                "radius": r,
+                "height": h,
+                "transform": transform,
+            }
+
+    @staticmethod
     def from_trimesh(mesh: trimesh.Trimesh, min_capsule: bool = False) -> Capsule:
         """
         Create Capsule geometry from minimum bounding cylinder of the mesh.
         """
         if mesh.is_empty:
             return Capsule(pose=jaxlie.SE3.identity(), size=jnp.zeros((2,)))
-        results = trimesh.bounds.minimum_cylinder(mesh)
+
+        results = Capsule.find_minimum_bounding_capsule(mesh)
         radius = results["radius"]
         height = results["height"]
+        tf_mat = results["transform"]
+
         if min_capsule:
             if height > 2 * radius:
                 height = height - 2 * radius
@@ -252,7 +334,6 @@ class Capsule(CollGeom):
                 radius = height / 2
                 height = 0.0
 
-        tf_mat = results["transform"]
         tf = jaxlie.SE3.from_matrix(tf_mat)
         capsule = Capsule.from_radius_height(
             position=jnp.zeros((3,)),

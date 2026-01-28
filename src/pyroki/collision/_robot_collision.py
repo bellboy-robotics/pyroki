@@ -85,7 +85,7 @@ class RobotCollision:
             cur_ignore_pairs = list(user_ignore_pairs)
             
             # find recursively, which links are connected to the world via fixed joints only
-            static_links = RobotCollision.find_static_link(parent_link_name="world", joints=urdf.joint_map.values())
+            static_links = RobotCollision.find_static_links(parent_link_name="world", joints=urdf.joint_map.values())
             # Add all pairs of static links to the ignore pairs
             for i in range(len(static_links)):
                 for j in range(i+1, len(static_links)):
@@ -133,7 +133,7 @@ class RobotCollision:
         )
 
     @staticmethod
-    def find_static_link(parent_link_name: str, joints: list[yourdfpy.Joint]) -> list[str]:
+    def find_static_links(parent_link_name: str, joints: list[yourdfpy.Joint]) -> list[str]:
         """
         Find all links that are connected to the parent_link_name via fixed joints only
         """
@@ -142,7 +142,7 @@ class RobotCollision:
         for joint in joints:
             if joint.parent == parent_link_name and joint.type == "fixed":
                 static_links.append(joint.child)
-                static_links.extend(RobotCollision.find_static_link(joint.child, joints))
+                static_links.extend(RobotCollision.find_static_links(joint.child, joints))
         return static_links
 
     @staticmethod
