@@ -41,7 +41,8 @@ class RobotCollision:
         user_ignore_pairs: tuple[tuple[str, str], ...] = (),
         ignore_immediate_adjacents: bool = True,
         min_capsule: bool = False,
-        ignore_world_link: bool = True,
+        ignore_world_link_collision: bool = True,
+        ignore_static_link_self_collisions: bool = True,
     ):
         """
         Build a differentiable robot collision model from a URDF.
@@ -51,6 +52,9 @@ class RobotCollision:
             user_ignore_pairs: Additional pairs of link names to ignore for self-collision.
             ignore_immediate_adjacents: If True, automatically ignore collisions
                 between adjacent (parent/child) links based on the URDF structure.
+            min_capsule: If True, reduce the bounding cylinder height and radius so the capsule with same dimesnsions will be bounded inside the cylinder.
+            ignore_world_link_collision: If True, ignore collisions with the world link.
+            ignore_static_link_self_collisions: If True, ignore collisions between static links.
         """
         # Re-load urdf with collision data if not already loaded.
         filename_handler = urdf._filename_handler  # pylint: disable=protected-access
@@ -69,11 +73,27 @@ class RobotCollision:
         link_name_list = link_info.names  # Use names from parser
         
         # Ignore collisions with world link
-        if ignore_world_link:
+        if ignore_world_link_collision:
             cur_ignore_pairs = list(user_ignore_pairs)
             for link_name in link_name_list:
                 if link_name != "world":
                     cur_ignore_pairs.append(("world", link_name))
+            user_ignore_pairs = tuple(cur_ignore_pairs)
+
+        # Ignore collisions between static links
+        if ignore_static_link_self_collisions:
+            cur_ignore_pairs = list(user_ignore_pairs)
+            
+            # find recursively, which links are connected to the world via fixed joints only
+            static_links = RobotCollision.find_static_link(parent_link_name="world", joints=urdf.joint_map.values())
+            # Add all pairs of static links to the ignore pairs
+            for i in range(len(static_links)):
+                for j in range(i+1, len(static_links)):
+                    cur_ignore_pairs.append((static_links[i], static_links[j]))
+
+            print(f"Static links: {static_links}")
+            print(f"Ignore pairs: {cur_ignore_pairs}")
+            
             user_ignore_pairs = tuple(cur_ignore_pairs)
 
         # Gather all collision meshes.
@@ -111,6 +131,19 @@ class RobotCollision:
             active_idx_j=active_idx_j,
             coll=capsules,
         )
+
+    @staticmethod
+    def find_static_link(parent_link_name: str, joints: list[yourdfpy.Joint]) -> list[str]:
+        """
+        Find all links that are connected to the parent_link_name via fixed joints only
+        """
+
+        static_links = []
+        for joint in joints:
+            if joint.parent == parent_link_name and joint.type == "fixed":
+                static_links.append(joint.child)
+                static_links.extend(RobotCollision.find_static_link(joint.child, joints))
+        return static_links
 
     @staticmethod
     def _compute_active_pair_indices(
