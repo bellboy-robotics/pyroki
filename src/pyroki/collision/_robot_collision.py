@@ -41,6 +41,7 @@ class RobotCollision:
         user_ignore_pairs: tuple[tuple[str, str], ...] = (),
         ignore_immediate_adjacents: bool = True,
         min_capsule: bool = False,
+        ignore_world_link: bool = True,
     ):
         """
         Build a differentiable robot collision model from a URDF.
@@ -66,6 +67,14 @@ class RobotCollision:
 
         _, link_info = RobotURDFParser.parse(urdf)
         link_name_list = link_info.names  # Use names from parser
+        
+        # Ignore collisions with world link
+        if ignore_world_link:
+            cur_ignore_pairs = list(user_ignore_pairs)
+            for link_name in link_name_list:
+                if link_name != "world":
+                    cur_ignore_pairs.append(("world", link_name))
+            user_ignore_pairs = tuple(cur_ignore_pairs)
 
         # Gather all collision meshes.
         # The order of cap_list must match link_name_list.
