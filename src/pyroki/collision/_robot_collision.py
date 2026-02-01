@@ -74,7 +74,7 @@ class RobotCollision:
         _, link_info = RobotURDFParser.parse(urdf)
         link_name_list = link_info.names  # Use names from parser
         
-        # Ignore collisions with world link
+        # Ignore collisions between ignored links and all other links
         if len(ignore_links) > 0:
             cur_ignore_pairs = list(user_ignore_pairs)
             cur_ignore_pairs += [(ignore_link, link_name) for ignore_link in ignore_links if ignore_link in link_name_list for link_name in link_name_list if link_name != ignore_link]
@@ -89,9 +89,6 @@ class RobotCollision:
             for i in range(len(static_links)):
                 for j in range(i+1, len(static_links)):
                     cur_ignore_pairs.append((static_links[i], static_links[j]))
-
-            print(f"Static links: {static_links}")
-            print(f"Ignore pairs: {cur_ignore_pairs}")
             
             user_ignore_pairs = tuple(cur_ignore_pairs)
 
