@@ -237,17 +237,18 @@ class Capsule(CollGeom):
         return Capsule(pose=pose, size=size)
 
     @staticmethod
-    def find_minimum_bounding_capsule(mesh: trimesh.Trimesh, static_link: bool = False) -> dict:
+    def find_minimum_bounding_capsule(mesh: trimesh.Trimesh, enable_aabb: bool = False) -> dict:
         """
         Find the minimum bounding capsule of the mesh.
         Decide between axis-aligned bounding box (AABB) and minimum cylinder method for static links only.
         """
 
+        # Check default minimum cylinder method
         cylinder_results = trimesh.bounds.minimum_cylinder(mesh)
-        if not static_link:
+        if not enable_aabb:
             return cylinder_results
 
-        # Check axis-aligned bounding box (much simpler!)
+        # Check axis-aligned bounding box method
         extents = mesh.extents  # [x_size, y_size, z_size]
         center = mesh.centroid  # or (bounds[0] + bounds[1]) / 2
         
@@ -318,14 +319,14 @@ class Capsule(CollGeom):
             }
 
     @staticmethod
-    def from_trimesh(mesh: trimesh.Trimesh, min_capsule: bool = False, static_link: bool = False) -> Capsule:
+    def from_trimesh(mesh: trimesh.Trimesh, min_capsule: bool = False, enable_aabb: bool = False) -> Capsule:
         """
         Create Capsule geometry from minimum bounding cylinder of the mesh.
         """
         if mesh.is_empty:
             return Capsule(pose=jaxlie.SE3.identity(), size=jnp.zeros((2,)))
 
-        results = Capsule.find_minimum_bounding_capsule(mesh, static_link)
+        results = Capsule.find_minimum_bounding_capsule(mesh, enable_aabb=enable_aabb)
         radius = results["radius"]
         height = results["height"]
         tf_mat = results["transform"]

@@ -43,6 +43,7 @@ class RobotCollision:
         min_capsule: bool = False,
         ignore_links: list[str] = ["world", "link_tcp"],
         ignore_static_link_self_collisions: bool = True,
+        enable_aabb_for_static_links: bool = False,
     ):
         """
         Build a differentiable robot collision model from a URDF.
@@ -55,6 +56,7 @@ class RobotCollision:
             min_capsule: If True, reduce the bounding cylinder height and radius so the capsule with same dimesnsions will be bounded inside the cylinder.
             ignore_links: List of link names to ignore for collisions.
             ignore_static_link_self_collisions: If True, ignore collisions between static links.
+            enable_aabb_for_static_links: If True, allow axis-aligned bounding box (AABB) method to find the minimum bounding capsule for static links.
         """
         # Re-load urdf with collision data if not already loaded.
         filename_handler = urdf._filename_handler  # pylint: disable=protected-access
@@ -97,11 +99,12 @@ class RobotCollision:
         # The order of cap_list must match link_name_list.
         cap_list = list[Capsule]()
         for link_name in link_name_list:
+            enable_aabb = enable_aabb_for_static_links and link_name in static_links
             cap_list.append(
                 Capsule.from_trimesh(
                     RobotCollision._get_trimesh_collision_geometries(urdf, link_name),
                     min_capsule=min_capsule,
-                    static_link=link_name in static_links,
+                    enable_aabb=enable_aabb,
                 )
             )
 

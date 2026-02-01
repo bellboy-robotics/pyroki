@@ -30,7 +30,7 @@ def main(urdf_path: str | None = None):
         urdf = yourdfpy.URDF.load(urdf_path)
         target_link_name = "link_tcp"
     robot = pk.Robot.from_urdf(urdf)
-    robot_coll = RobotCollision.from_urdf(urdf, min_capsule=True)
+    robot_coll = RobotCollision.from_urdf(urdf, min_capsule=True, enable_aabb_for_static_links=True)
     plane_coll = HalfSpace.from_point_and_normal(
         np.array([0.0, 0.0, 0.0]), np.array([0.0, 0.0, 1.0])
     )
