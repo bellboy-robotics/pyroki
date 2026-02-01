@@ -237,7 +237,7 @@ class Capsule(CollGeom):
         return Capsule(pose=pose, size=size)
 
     @staticmethod
-    def find_minimum_bounding_capsule(mesh: trimesh.Trimesh, static_link: bool = False, link_name: str = "") -> dict:
+    def find_minimum_bounding_capsule(mesh: trimesh.Trimesh, static_link: bool = False) -> dict:
         """
         Find the minimum bounding capsule of the mesh.
         Decide between axis-aligned bounding box (AABB) and minimum cylinder method for static links only.
@@ -309,10 +309,8 @@ class Capsule(CollGeom):
         cylinder_volume_approx = cylinder_results["radius"]**2 * cylinder_results["height"] + 4/3 * cylinder_results["radius"]**3
         
         if cylinder_volume_approx < min_volume:
-            print(f"Using minimum cylinder method for {link_name}, h: {h}, r: {r}")
             return cylinder_results
         else:
-            print(f"Using axis-aligned bounding box method for {link_name}, h: {h}, r: {r}, h_index: {h_index}")
             return {
                 "radius": r,
                 "height": h,
