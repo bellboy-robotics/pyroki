@@ -687,18 +687,17 @@ class Heightmap(CollGeom):
         # Use the larger of the two to ensure we cover the disk
         r_cells = jnp.maximum(r_cells_x, r_cells_y)
 
-        # Determine the maximum search radius in cells (cap to avoid excessive computation)
-        # We'll sample a fixed grid of offsets and mask by distance
-        max_r_cells = jnp.ceil(jnp.max(r_cells)).astype(int)
-        # Cap at reasonable value to avoid huge memory usage
-        max_r_cells = jnp.minimum(max_r_cells, 10)
+        # Use a FIXED grid size for JAX compatibility (arange needs concrete bounds).
+        # The actual radius is used for masking below.
+        # Cap at 10 cells to avoid excessive computation.
+        MAX_R_CELLS = 10  # Compile-time constant
 
         batch_axes = self.get_batch_axes()
         target_batch_shape = jnp.broadcast_shapes(batch_axes, world_coords.shape[:-1])
 
-        # Create offset grid: all integer offsets within a square of side 2*max_r_cells+1
-        # Then we'll mask by circular distance
-        offsets_1d = jnp.arange(-max_r_cells, max_r_cells + 1)
+        # Create offset grid: all integer offsets within a square of side 2*MAX_R_CELLS+1
+        # Then we'll mask by circular distance using the actual r_cells value
+        offsets_1d = jnp.arange(-MAX_R_CELLS, MAX_R_CELLS + 1)
         offset_r, offset_c = jnp.meshgrid(offsets_1d, offsets_1d, indexing="ij")
         offset_r = offset_r.ravel()  # (n_offsets,)
         offset_c = offset_c.ravel()  # (n_offsets,)
