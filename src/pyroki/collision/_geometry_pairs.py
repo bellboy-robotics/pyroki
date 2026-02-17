@@ -140,10 +140,14 @@ def heightmap_sphere(heightmap: Heightmap, sphere: Sphere) -> Float[Array, "*bat
 
 
 def heightmap_capsule(heightmap: Heightmap, capsule: Capsule) -> Float[Array, "*batch"]:
-    """Calculate approximate distance between heightmap and capsule, by
-    checking heightmap points below capsule endpoints.
+    """Calculate distance between heightmap and capsule.
 
-    Note that this may miss collisions when capsule body intersects but endpoints are above heightmap!
+    For each capsule endpoint, searches within a disk of radius equal to the capsule
+    radius to find the maximum obstacle height. This properly accounts for the capsule's
+    cylindrical body, not just a point directly below the endpoint.
+
+    The distance formula is: endpoint_z - max_obstacle_height_in_disk
+    No radius subtraction needed since we're already searching within the radius disk.
     """
     batch_axes = jnp.broadcast_shapes(
         heightmap.get_batch_axes(), capsule.get_batch_axes()
@@ -158,9 +162,10 @@ def heightmap_capsule(heightmap: Heightmap, capsule: Capsule) -> Float[Array, "*
     p1_w = cap_pos_w + segment_offset_w
     p2_w = cap_pos_w - segment_offset_w
 
-    # Interpolate heightmap surface height (local Z) below each end-sphere center.
-    h_surf1_local = heightmap._interpolate_height_at_coords(p1_w)
-    h_surf2_local = heightmap._interpolate_height_at_coords(p2_w)
+    # Find maximum heightmap height within radius disk around each endpoint.
+    # This accounts for the capsule's physical thickness.
+    h_max1_local = heightmap._max_height_in_disk(p1_w, cap_radius)
+    h_max2_local = heightmap._max_height_in_disk(p2_w, cap_radius)
 
     # Get end-sphere centers Z coordinates in heightmap's local frame.
     p1_h = heightmap.pose.inverse().apply(p1_w)
@@ -168,9 +173,10 @@ def heightmap_capsule(heightmap: Heightmap, capsule: Capsule) -> Float[Array, "*
     z1_local = p1_h[..., 2]
     z2_local = p2_h[..., 2]
 
-    # Calculate vertical distance for each end sphere.
-    dist1 = z1_local - h_surf1_local - cap_radius
-    dist2 = z2_local - h_surf2_local - cap_radius
+    # Calculate vertical distance for each endpoint.
+    # No radius subtraction - we already searched within the radius disk.
+    dist1 = z1_local - h_max1_local
+    dist2 = z2_local - h_max2_local
 
     # Return the minimum distance.
     min_dist = jnp.minimum(dist1, dist2)

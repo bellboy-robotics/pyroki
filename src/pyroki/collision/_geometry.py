@@ -655,6 +655,108 @@ class Heightmap(CollGeom):
         interpolated_local_z = interpolated_heights * self.height_scale
         return interpolated_local_z
 
+    def _max_height_in_disk(
+        self,
+        world_coords: Float[Array, "*batch 3"],
+        radius: Float[Array, "*batch"],
+    ) -> Float[Array, "*batch"]:
+        """Find the maximum heightmap value within a disk of given radius around query points.
+
+        This is useful for capsule collision: instead of sampling at a single point directly
+        below the capsule endpoint, we search within the capsule's radius to find the tallest
+        obstacle that could collide with the capsule's cylindrical body.
+
+        Args:
+            world_coords: Query coordinates in world frame (*batch, 3).
+            radius: Search radius for each query point (*batch).
+
+        Returns:
+            Maximum heightmap height within the disk, in heightmap's local frame (*batch).
+        """
+        # Transform world coords to heightmap local frame
+        local_coords = self.pose.inverse().apply(world_coords)
+        sx, sy = local_coords[..., 0], local_coords[..., 1]
+
+        # Calculate center grid indices
+        c_center = sx / self.x_scale + (self.cols - 1) / 2.0
+        r_center = sy / self.y_scale + (self.rows - 1) / 2.0
+
+        # Calculate radius in grid cells
+        r_cells_x = radius / self.x_scale
+        r_cells_y = radius / self.y_scale
+        # Use the larger of the two to ensure we cover the disk
+        r_cells = jnp.maximum(r_cells_x, r_cells_y)
+
+        # Use a FIXED grid size for JAX compatibility (arange needs concrete bounds).
+        # The actual radius is used for masking below.
+        # Cap at 10 cells to avoid excessive computation.
+        MAX_R_CELLS = 10  # Compile-time constant
+
+        batch_axes = self.get_batch_axes()
+        target_batch_shape = jnp.broadcast_shapes(batch_axes, world_coords.shape[:-1])
+
+        # Create offset grid: all integer offsets within a square of side 2*MAX_R_CELLS+1
+        # Then we'll mask by circular distance using the actual r_cells value
+        offsets_1d = jnp.arange(-MAX_R_CELLS, MAX_R_CELLS + 1)
+        offset_r, offset_c = jnp.meshgrid(offsets_1d, offsets_1d, indexing="ij")
+        offset_r = offset_r.ravel()  # (n_offsets,)
+        offset_c = offset_c.ravel()  # (n_offsets,)
+        n_offsets = offset_r.shape[0]
+
+        # Broadcast center coordinates to target shape
+        r_center_bc = jnp.broadcast_to(r_center, target_batch_shape)
+        c_center_bc = jnp.broadcast_to(c_center, target_batch_shape)
+        r_cells_bc = jnp.broadcast_to(r_cells, target_batch_shape)
+
+        # Compute all sample positions: (*batch, n_offsets)
+        r_samples = r_center_bc[..., None] + offset_r[None, ...]
+        c_samples = c_center_bc[..., None] + offset_c[None, ...]
+
+        # Clamp to valid grid indices
+        r_samples_clamped = jnp.clip(r_samples, 0, self.rows - 1).astype(int)
+        c_samples_clamped = jnp.clip(c_samples, 0, self.cols - 1).astype(int)
+
+        # Compute distance from center in grid cells for masking
+        dist_cells = jnp.sqrt(offset_r**2 + offset_c**2)  # (n_offsets,)
+
+        # Create mask: True if offset is within the radius disk
+        # Broadcast r_cells to match: (*batch, n_offsets)
+        mask = dist_cells[None, ...] <= r_cells_bc[..., None]
+
+        # Sample heights from the heightmap
+        hm_data_bc = jnp.broadcast_to(
+            self.height_data, target_batch_shape + self.height_data.shape[-2:]
+        )
+
+        if target_batch_shape:
+            batch_size = int(onp.prod(target_batch_shape))
+            hm_flat = hm_data_bc.reshape((batch_size, self.rows, self.cols))
+            r_flat = r_samples_clamped.reshape((batch_size, n_offsets))
+            c_flat = c_samples_clamped.reshape((batch_size, n_offsets))
+            mask_flat = mask.reshape((batch_size, n_offsets))
+
+            # Gather heights: use advanced indexing
+            # For each batch element, gather heights at (r, c) positions
+            def gather_max_height(hm, r_idx, c_idx, m):
+                heights = hm[r_idx, c_idx]  # (n_offsets,)
+                # Set heights outside mask to -inf so they don't affect max
+                heights_masked = jnp.where(m, heights, -jnp.inf)
+                return jnp.max(heights_masked)
+
+            max_heights_flat = jax.vmap(gather_max_height)(
+                hm_flat, r_flat, c_flat, mask_flat
+            )
+            max_heights = max_heights_flat.reshape(target_batch_shape)
+        else:
+            # Non-batched case
+            heights = hm_data_bc[r_samples_clamped, c_samples_clamped]
+            heights_masked = jnp.where(mask, heights, -jnp.inf)
+            max_heights = jnp.max(heights_masked)
+
+        # Scale by height_scale
+        max_heights_scaled = max_heights * self.height_scale
+        return max_heights_scaled
+
     def _get_vertices_local(self) -> Float[Array, "*batch H*W 3"]:
         """Computes the heightmap vertices in its local frame using JAX.
 
