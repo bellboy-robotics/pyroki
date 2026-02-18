@@ -7,6 +7,17 @@ from ._geometry import HalfSpace, Sphere, Capsule, Heightmap
 from . import _utils
 
 
+# --- Heightmap Collision Configuration ---
+
+# Close cell threshold for heightmap collision (in grid cells).
+# Controls which cells use the z-based formula vs horizontal penetration formula.
+# - 0.0: Only center cell uses z-based formula (most horizontal push)
+# - 1.0: 3x3 cross-shaped region uses z-based formula (default)
+# - 1.5: 3x3 square region uses z-based formula
+# - Higher values: More cells use z-based formula (more vertical push)
+HEIGHTMAP_CLOSE_CELL_THRESHOLD: float = 1.0
+
+
 # --- HalfSpace Collision Implementations ---
 
 
@@ -142,12 +153,13 @@ def heightmap_sphere(heightmap: Heightmap, sphere: Sphere) -> Float[Array, "*bat
 def heightmap_capsule(heightmap: Heightmap, capsule: Capsule) -> Float[Array, "*batch"]:
     """Calculate distance between heightmap and capsule.
 
-    For each capsule endpoint, searches within a disk of radius equal to the capsule
-    radius to find the maximum obstacle height. This properly accounts for the capsule's
-    cylindrical body, not just a point directly below the endpoint.
+    For each capsule endpoint, computes the minimum signed distance considering:
+    - Close cells (within HEIGHTMAP_CLOSE_CELL_THRESHOLD): vertical distance (z - h - r)
+    - Far cells above obstacle: vertical clearance (z - h)
+    - Far cells below obstacle: horizontal penetration (dist_xy - r)
 
-    The distance formula is: endpoint_z - max_obstacle_height_in_disk
-    No radius subtraction needed since we're already searching within the radius disk.
+    This provides better gradients for wall collisions (horizontal push)
+    vs floor/ceiling collisions (vertical push).
     """
     batch_axes = jnp.broadcast_shapes(
         heightmap.get_batch_axes(), capsule.get_batch_axes()
@@ -162,23 +174,17 @@ def heightmap_capsule(heightmap: Heightmap, capsule: Capsule) -> Float[Array, "*
     p1_w = cap_pos_w + segment_offset_w
     p2_w = cap_pos_w - segment_offset_w
 
-    # Find maximum heightmap height within radius disk around each endpoint.
-    # This accounts for the capsule's physical thickness.
-    h_max1_local = heightmap._max_height_in_disk(p1_w, cap_radius)
-    h_max2_local = heightmap._max_height_in_disk(p2_w, cap_radius)
+    # Compute signed distance for each endpoint using the hybrid formula.
+    # This returns the minimum distance across all cells in the search disk,
+    # using different formulas for close vs far cells.
+    dist1 = heightmap._signed_distance_in_disk(
+        p1_w, cap_radius, close_cell_threshold=HEIGHTMAP_CLOSE_CELL_THRESHOLD
+    )
+    dist2 = heightmap._signed_distance_in_disk(
+        p2_w, cap_radius, close_cell_threshold=HEIGHTMAP_CLOSE_CELL_THRESHOLD
+    )
 
-    # Get end-sphere centers Z coordinates in heightmap's local frame.
-    p1_h = heightmap.pose.inverse().apply(p1_w)
-    p2_h = heightmap.pose.inverse().apply(p2_w)
-    z1_local = p1_h[..., 2]
-    z2_local = p2_h[..., 2]
-
-    # Calculate vertical distance for each endpoint.
-    # No radius subtraction - we already searched within the radius disk.
-    dist1 = z1_local - h_max1_local
-    dist2 = z2_local - h_max2_local
-
-    # Return the minimum distance.
+    # Return the minimum distance across both endpoints.
     min_dist = jnp.minimum(dist1, dist2)
     assert min_dist.shape == batch_axes
     return min_dist

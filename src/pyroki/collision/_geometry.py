@@ -757,6 +757,154 @@ class Heightmap(CollGeom):
         max_heights_scaled = max_heights * self.height_scale
         return max_heights_scaled
 
+    def _signed_distance_in_disk(
+        self,
+        world_coords: Float[Array, "*batch 3"],
+        radius: Float[Array, "*batch"],
+        close_cell_threshold: float = 1.0,
+    ) -> Float[Array, "*batch"]:
+        """Compute minimum signed distance from sphere to heightmap within its radius.
+
+        Uses different distance formulas based on cell position to provide better
+        gradients for wall collisions (horizontal push) vs floor collisions (vertical push):
+
+        - Close cells (dist_cells <= close_cell_threshold): z - h - r
+          These cells are directly below/above the sphere, use full vertical formula.
+        - Far cells above obstacle (local_z > h): z - h
+          Above the obstacle, just measure vertical clearance (no radius subtraction).
+        - Far cells below/at obstacle (local_z <= h): dist_xy - r
+          Collision from the side, use horizontal penetration distance.
+
+        Only cells within the sphere's radius are considered. Cells outside the radius
+        are masked out to avoid spurious small distances from distant obstacles.
+
+        Args:
+            world_coords: Query coordinates (sphere centers) in world frame (*batch, 3).
+            radius: Sphere radius for each query point (*batch).
+            close_cell_threshold: Distance threshold in cells for "close" cells.
+                Cells within this distance use the z-based formula.
+                Examples: 0.0 = only center cell, 1.0 = 3x3 cross, 1.5 = 3x3 square.
+                Default: 1.0
+
+        Returns:
+            Minimum signed distance to heightmap (*batch).
+            Negative values indicate collision/penetration.
+        """
+        # Transform world coords to heightmap local frame
+        local_coords = self.pose.inverse().apply(world_coords)
+        sx, sy, local_z = local_coords[..., 0], local_coords[..., 1], local_coords[..., 2]
+
+        # Calculate center grid indices
+        c_center = sx / self.x_scale + (self.cols - 1) / 2.0
+        r_center = sy / self.y_scale + (self.rows - 1) / 2.0
+
+        # Calculate radius in grid cells for masking
+        r_cells_x = radius / self.x_scale
+        r_cells_y = radius / self.y_scale
+        r_cells = jnp.maximum(r_cells_x, r_cells_y)
+
+        # Use a FIXED grid size for JAX compatibility
+        MAX_R_CELLS = 5  # Compile-time constant
+
+        batch_axes = self.get_batch_axes()
+        target_batch_shape = jnp.broadcast_shapes(batch_axes, world_coords.shape[:-1])
+
+        # Create offset grid
+        offsets_1d = jnp.arange(-MAX_R_CELLS, MAX_R_CELLS + 1)
+        offset_r, offset_c = jnp.meshgrid(offsets_1d, offsets_1d, indexing="ij")
+        offset_r = offset_r.ravel()  # (n_offsets,)
+        offset_c = offset_c.ravel()  # (n_offsets,)
+        n_offsets = offset_r.shape[0]
+
+        # Distance from center in cells (constant for each offset)
+        dist_cells = jnp.sqrt(offset_r.astype(jnp.float32)**2 + offset_c.astype(jnp.float32)**2)
+
+        # Convert to meters using average cell size
+        cell_size = (self.x_scale + self.y_scale) / 2
+        dist_xy = dist_cells * cell_size  # (n_offsets,)
+
+        # Mask for close cells (compile-time, based on offset positions)
+        is_close = dist_cells <= close_cell_threshold  # (n_offsets,)
+
+        # Broadcast center coordinates and radius
+        r_center_bc = jnp.broadcast_to(r_center, target_batch_shape)
+        c_center_bc = jnp.broadcast_to(c_center, target_batch_shape)
+        r_cells_bc = jnp.broadcast_to(r_cells, target_batch_shape)
+
+        # Compute sample positions
+        r_samples = r_center_bc[..., None] + offset_r[None, ...]
+        c_samples = c_center_bc[..., None] + offset_c[None, ...]
+
+        # Clamp to valid grid indices
+        r_samples_clamped = jnp.clip(r_samples, 0, self.rows - 1).astype(int)
+        c_samples_clamped = jnp.clip(c_samples, 0, self.cols - 1).astype(int)
+
+        # Disk mask: only consider cells within the sphere's radius
+        disk_mask = dist_cells[None, ...] <= r_cells_bc[..., None]
+
+        # Sample heights from the heightmap
+        hm_data_bc = jnp.broadcast_to(
+            self.height_data, target_batch_shape + self.height_data.shape[-2:]
+        )
+
+        if target_batch_shape:
+            batch_size = int(onp.prod(target_batch_shape))
+            hm_flat = hm_data_bc.reshape((batch_size, self.rows, self.cols))
+            r_flat = r_samples_clamped.reshape((batch_size, n_offsets))
+            c_flat = c_samples_clamped.reshape((batch_size, n_offsets))
+            disk_mask_flat = disk_mask.reshape((batch_size, n_offsets))
+            local_z_flat = jnp.broadcast_to(local_z, target_batch_shape).reshape((batch_size,))
+            radius_flat = jnp.broadcast_to(radius, target_batch_shape).reshape((batch_size,))
+
+            def compute_min_distance(hm, r_idx, c_idx, dmask, lz, rad):
+                # Sample heights at offset positions and scale
+                heights = hm[r_idx, c_idx] * self.height_scale  # (n_offsets,)
+
+                # Check if sphere center is above each obstacle cell
+                is_above = lz > heights  # (n_offsets,)
+
+                # === Compute distances for each formula ===
+                # Close cells: original vertical formula (z - h - r)
+                close_dist = lz - heights - rad
+
+                # Far cells above obstacle: just vertical clearance (z - h)
+                far_above_dist = lz - heights
+
+                # Far cells below/at obstacle: horizontal penetration (dist_xy - r)
+                far_below_dist = dist_xy - rad
+
+                # === Combine using masks (no if conditions) ===
+                far_dist = jnp.where(is_above, far_above_dist, far_below_dist)
+                distance = jnp.where(is_close, close_dist, far_dist)
+
+                # Apply disk mask: cells outside radius get +inf (won't affect min)
+                distance_masked = jnp.where(dmask, distance, jnp.inf)
+
+                return jnp.min(distance_masked)
+
+            min_distances_flat = jax.vmap(compute_min_distance)(
+                hm_flat, r_flat, c_flat, disk_mask_flat, local_z_flat, radius_flat
+            )
+            min_distances = min_distances_flat.reshape(target_batch_shape)
+        else:
+            # Non-batched case
+            heights = hm_data_bc[r_samples_clamped, c_samples_clamped] * self.height_scale
+
+            is_above = local_z > heights
+
+            close_dist = local_z - heights - radius
+            far_above_dist = local_z - heights
+            far_below_dist = dist_xy - radius
+
+            far_dist = jnp.where(is_above, far_above_dist, far_below_dist)
+            distance = jnp.where(is_close, close_dist, far_dist)
+
+            # Apply disk mask
+            distance_masked = jnp.where(disk_mask, distance, jnp.inf)
+            min_distances = jnp.min(distance_masked)
+
+        return min_distances
+
     def _get_vertices_local(self) -> Float[Array, "*batch H*W 3"]:
         """Computes the heightmap vertices in its local frame using JAX.
 
